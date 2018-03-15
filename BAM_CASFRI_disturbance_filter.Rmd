@@ -1,0 +1,180 @@
+---
+title: "BAM-CASFRI Disturbance Filter"
+author: "Andrew Crosby"
+date: '`r format(Sys.time(), "%d %B, %Y")`'
+output: 
+  word_document:
+    reference_docx: "C:/Users/crosby/Documents/ACrosby/BAM_Research/Database/BAM_CASFRI_database/common/word_styles_reference_01.docx"
+bibliography: "C:/Users/crosby/Documents/ACrosby/BAM_Research/Database/BAM_CASFRI_database/common/RepResRef.bib"
+csl: "C:/Users/crosby/Documents/ACrosby/BAM_Research/Database/BAM_CASFRI_database/common/ecology.csl"
+objects: BBSBAM-CASFRI_elimination_final.Rdata
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Filtering the BAM-CASFRI dataset by whether a disturbance occured between the photo year and the survey year
+
+The purpose of this document is to describe the process used to identify the Boreal Avian Modelling Project [BAM; @Cumming2010] point count stations that coincide with usable forest resource inventory polygons from the Common Attribute Schema Forest Resource Inventory [CASFRI; @Cumming2015] dataset. Usable CASFRI polygons are ones that have sufficient forest composition and structure data and that we can determine (to the best of our ability) did not undergo disturbance between the photo year and the survey year. A lack of disturbance will be taken as evidence that the composition and structure of vegetation described in the CASFRI dataset corresponds to conditions on the ground at the time of the bird survey. The BAM points were those for which there was point count and offset data available in the most recent version of the dataset as created by Peter Sólymos. 
+
+Our first step, done in a GIS, was to do a spatial join between CASFRI polygons, BAM points, the Global Forest Change 2000-2014 [GFC; @Hansen2013] dataset, and the Canada Landsat Disturbance [CanLaD; @Guindon2018] dataset. The BAM points included all points (both on- and off-road) that intersected the CASFRI dataset. The GFC dataset records annual forest loss in 30m pixels between the years 2000 and 2014, and we used the portion of the dataset that records year of loss as a number between 0 and 14, where 0 indicates no forest loss reccorded and 1-14 indicate loss was recorded in that number of years after 2000. Thus, a 5 indicates that a disturbance was recorded in year 2005. The CanLaD dataset is a raster layer that records the year of distrubance throughout Canada due to fire or harvest between 1984 and 2015. Prior to the operation, all datasets were transformed into the Canada Albers Equal Area Conic corrdinate system. 
+
+```{r 'prep', include = FALSE, eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE}
+
+rm(list=ls(all=TRUE))
+
+# Load the libraries
+# ------------------
+library(rgdal)
+library(ggplot2)
+library(plyr)
+library(dplyr)
+library(MASS)
+library(sqldf)
+
+```
+```{r, include = FALSE, cache=TRUE}
+
+# -------------------------------------------------------------------------------------------------------------------------------------------------
+# Set the working directory and bring in the data
+# 
+# -------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+setwd("C:\\Users\\crosby\\Documents\\ACrosby\\BAM_Research\\Database\\BAM_CASFRI_database")
+
+ss <- read.csv("SS.csv", header = TRUE)
+
+pkey <- read.csv("PKEY.csv", header = TRUE)    # The pkey table from the M-drive
+
+bam_casfri <- read.csv("BAMpts_casatt.csv", header=TRUE)    # The table of bam-casfri points and the attributes of the casfri polygons in which they occur
+
+bam_casfri_dst <- read.csv("bam_casfri_dst.csv", header=TRUE)    # The table of bam-casfri points with the disturbance records from gfc, and CanLaD (derived from GIS)
+
+
+```
+
+### Step 1:
+We queried the dataset to create a file that has the SS number (the unique identifier) of individual BAM points, the initial year the point was surveyed in (we did not include records from subsequent years), the ID of the CASFRI polygon that the point occurred in, the year the photo was taken from which the polygon was interpreted, the difference between the photo year and the survey year, the GFC year of loss, the CanLaD disturbance year, the disturbance records (if any) from the CASFRI data, and the X-Y coordinates of the point in Canada Albers Equal Area Conic with a linear unit of meters.
+
+```{r}
+# -------------------------------------------------------------------------------------------------------------------------------------------------
+# Step 1: Create the dataset with the location, distrubance records, photo year, and year of first survey at each point
+# 
+# -------------------------------------------------------------------------------------------------------------------------------------------------
+
+# Query the dataset to prodcue a table with the BAM-CASFRI points, the CASFRI polygon ID, the photo year, the year of the first survey at each point, and the disturbance records from the CASFRI dataset
+years <- sqldf("select bam_casfri.SS, min(pkey.Year) as YYYY, bam_casfri.CAS_ID, bam_casfri.photo_year,  bam_casfri.dist_yr_1,  bam_casfri.dist_yr_2,                     bam_casfri.dist_yr_3
+               from bam_casfri join pkey using(SS)
+               group by bam_casfri.SS")
+
+
+# Identify points where the CASFRI data does not record a photo year and change "photo_year" to NA
+length(years$photo_year[years$photo_year== -9999 | years$photo_year== -8888 | years$photo_year== -1111 | years$photo_year== 0])
+years$photo_year[years$photo_year== -9999 | years$photo_year== -8888 | years$photo_year== -1111 | years$photo_year== 0] <- NA
+
+# Creat a field of the difference between the survey year and the photo year
+years$year_dif<-years$YYYY-years$photo_year
+
+# Add the x-y data (both CAEAC and NAD 83), the gfc record, and the CanLaD records to the data
+years_dst <- sqldf("select years.*, bam_casfri_dst.POINT_X as x_caeac, bam_casfri_dst.POINT_Y as y_caeac, 
+        bam_casfri_dst.CanLaD_cae as canlad_dst, bam_casfri_dst.gfc_yol_ca as gfc, ss.X, ss.Y
+                   from (years join bam_casfri_dst using(SS)) join ss using(SS)")
+
+head(years_dst)
+
+years_dst$canlad_dst[years_dst$canlad_dst < 0] <- NA
+
+years_dst$gfc_yol <- years_dst$gfc + 2000
+years_dst$gfc_yol[years_dst$gfc_yol==2000] <- NA
+
+```
+
+
+![Figure 1. Histogram of the year differences between BAM survey years and CASFRI photo years.](figures/Fig1_hist.png)
+
+
+There were `r prettyNum(nrow(bam_casfri), big.mark = ",")` BAM points associated with CASFRI polygons. Of these, there were `r prettyNum(length(which(is.na(years_dst$photo_year))), big.mark = ",")` that did not have a year recorded for when the photo was taken (`r round(length(which(is.na(years_dst$photo_year)))/nrow(bam_casfri)*100, 2)`% of points). The above plot (Fig. 1) is a histogram of survey year - photo year, showing that the vast majority of points the photo was taken well before the bird survey was done. The plot in Fig. 2 (below) is the map of BAM-CASFRI points with a color ramp for year differnce. We mapped the year differences between photos and surveys to look for spatial structure.
+
+![Figure 2. Map of BAM-CASFRI points showing the difference between the photo year and the survey year.](figures/Fig2_map.png)
+
+It appears that there is some spatial structure in the data, with a great deal of the older photos being in  Manitoba and clustred in the western part of the study area (Alberta and British Columbia). Also, the mjority of the points with no photo year (shown in gray) are clustered in southern Ontario or scattered throughout northern Quebec.
+
+
+```{r}
+
+# -------------------------------------------------------------------------------------------------------------------------------------------------
+# Step 2: Do the eliminations based on photo and disturbance
+# 
+# -------------------------------------------------------------------------------------------------------------------------------------------------
+
+# The first elimination will be all sites where there is no photo year recorded
+length(which(is.na(years_dst$photo_year)))
+years_dst_photo<-years_dst[-which(is.na(years_dst$photo_year)),]
+
+
+```
+
+
+
+![Figure 3. 3D density plot of the BAM survey years and CASFRI photo years.](figures/Fig3_density3D.png)
+
+We used the CASFRI disturbance data, the Global Forest Change dataset, and the CanLaD dataset to determine whether a disturbance occurred at a site and when it occurred. The CASFRI dataset records up to 3 disturbances with the year the disturbance occurred (if available). The GFC dataset begins at the year 2001 and the CanLaD dataset begins in 1985 (no points within the BAM dataset had CanLad disturbance recorded prior to 1985) and ends in 2015, so these 2 datasets cover the majority of the time period encompassed by the BAM dataset.
+
+To determine if a disturbance had occurred between the photo year and survey year, we looked across disturbance records from each dataset (CASFRI, GFC, CanLaD) and determined if any recorded disturbances occurred betwen the photo year and the survey year. 
+
+```{r, cache=TRUE}
+
+# Now we simply check to see if a disturbance was recorded by any of the datasets (except BEAD) betwen the photo year and the survey year. If there is a disturbance
+# record in the BEAD datset but no evidence for a disturbance between the photo year and the survey year, we assume the BEAD disturbance occurred outside of that time period
+for(i in 1:nrow(years_dst_photo)){
+  d <- c(years_dst_photo$canlad_dst[i], years_dst_photo$gfc_yol[i], years_dst_photo$dist_yr_1[i], years_dst_photo$dist_yr_2[i], years_dst_photo$dist_yr_3[i])
+  years_dst_photo$i.dst[i] <- ifelse(any(d >= min(years_dst_photo$photo_year[i], years_dst_photo$YYYY[i]) & d <= max(years_dst_photo$photo_year[i], years_dst_photo$YYYY[i]), na.rm = TRUE), 1, 0)
+}
+
+t <- which(years_dst_photo$i.dst==1)
+
+y2.dst <- years_dst_photo[-t, ]
+
+
+
+```
+
+Below is a map of the points with no evidence of disturbance bewteen the photo year and the survey year, again using a color ramp for the year difference between the photo and the survey
+
+![Figure 4. Map of undisturbed BAM-CASFRI points showing the difference between the survey and the photo years.](figures\Fig4_map.png)
+
+
+Finally, we designated each point as being either in the west or the east based on its postion relative to the 98th meridian in Manitoba, and limited the data to points where the photo and the survey were no more than 10 years apart. 
+
+
+```{r, cache=TRUE}
+
+
+# Limit the data to sites that were surveyed within 10 years of the photo year
+f<-which(y2.dst$year_dif < -10 | y2.dst$year_dif > 10)
+years_final<-y2.dst[-f, ]
+
+# Designate region as east or west of the 98th meridian in Manitoba
+years_final$west<-rep(NA, nrow(years_final))
+for(i in 1:nrow(years_final)){
+  if(years_final[i, "X"] <= -98){
+    years_final[i, "west"]<-1
+  }else{
+    years_final[i, "west"]<-0
+  }
+}
+sum(years_final$west)
+
+
+```
+
+
+![Figure 5. Map of the final points eligable to be used in analysis, using only those where the survey was done within 10 years (+ or -) of the photo.](figures/Fig5_map.png)
+
+Out of `r prettyNum(nrow(years_final), big.mark = ",")` final points, there are `r prettyNum(nrow(years_final) - sum(years_final$west), big.mark = ",")` points in the east and `r prettyNum(sum(years_final$west), big.mark = ",")` points in the west (almost a `r round((nrow(years_final) - sum(years_final$west))/sum(years_final$west), 0)`:1 ratio). These points can now be matched up with forest composition and structure information from the CASFRI dataset and be used for modelling bird populations. Fig. 6 shows the denisty of survey year and photo for the final dataset, indicating the vast majority of surveys were done in the early 2000's while the vast majority of photos were taken around 2010.
+ 
+ ![Figure 6. 3D density plot of the BAM survey years and CASFRI photo years for the final set of points.](figures/Fig6_density3D.png)
+ 
+## Literature Cited
